@@ -1,0 +1,1 @@
+2025-04-12 22:36:11,216 - GoldTrader - ERROR - ERROR: {'type': 'EXCHANGE_SETUP_ERROR', 'message': "module 'ccxt' has no attribute 'puprime'"}
