@@ -1,241 +1,228 @@
-import requests
-import hmac
-import hashlib
 import time
-from urllib.parse import urlencode
-import json
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, List
+from datetime import datetime
 from config import Config
-from logger import logger, log_error, log_trade
+from logger import logger, log_error
 
 class PuPrimeAPI:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PuPrimeAPI, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.api_key = Config.PUPRIME_API_KEY
-        self.api_secret = Config.PUPRIME_API_SECRET
-        self.base_url = Config.PUPRIME_API_URL
-        self.session = requests.Session()
-        self._init_session()
+        if not hasattr(self, 'initialized'):
+            self.initialized = True
+            self._setup_exchange()
+            self._mock_data = {
+                'balance': 10000.0,
+                'positions': [],
+                'orders': [],
+                'price': 2000.0  # Mock GOLD price
+            }
 
-    def _init_session(self):
-        """Initialize session with default headers"""
-        self.session.headers.update({
-            'Content-Type': 'application/json',
-            'X-API-KEY': self.api_key
-        })
-
-    def _generate_signature(self, params: Dict) -> str:
-        """Generate signature for authenticated requests"""
-        query_string = urlencode(params)
-        signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-        return signature
-
-    def _make_request(self, method: str, endpoint: str, params: Optional[Dict] = None, 
-                     signed: bool = False, retry_count: int = 3) -> Dict:
-        """
-        Make HTTP request to PuPrime API with retry mechanism
-        
-        Args:
-            method: HTTP method (GET, POST, etc.)
-            endpoint: API endpoint
-            params: Request parameters
-            signed: Whether request needs signature
-            retry_count: Number of retries on failure
-        """
-        url = f"{self.base_url}{endpoint}"
-        params = params or {}
-
-        if signed:
-            params['timestamp'] = int(time.time() * 1000)
-            params['signature'] = self._generate_signature(params)
-
-        for attempt in range(retry_count):
-            try:
-                if method == 'GET':
-                    response = self.session.get(url, params=params)
-                elif method == 'POST':
-                    response = self.session.post(url, json=params)
-                elif method == 'DELETE':
-                    response = self.session.delete(url, params=params)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
-
-                response.raise_for_status()
-                return response.json()
-
-            except requests.exceptions.RequestException as e:
-                log_error("API_REQUEST_ERROR", str(e), 
-                         endpoint=endpoint, attempt=attempt+1)
-                
-                if attempt == retry_count - 1:
-                    raise
-                
-                # Exponential backoff
-                time.sleep(2 ** attempt)
-
-    def get_account_info(self) -> Dict:
-        """Get account information"""
+    def _setup_exchange(self):
+        """Initialize mock connection for development."""
         try:
-            response = self._make_request('GET', '/api/v1/account', signed=True)
-            logger.info("Successfully retrieved account information")
-            return response
+            self.exchange = {
+                'apiKey': Config.PUPRIME_API_KEY,
+                'secret': Config.PUPRIME_API_SECRET,
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'spot',
+                }
+            }
+            logger.info("Mock PuPrime API connection initialized")
         except Exception as e:
-            log_error("ACCOUNT_INFO_ERROR", str(e))
+            log_error("EXCHANGE_SETUP_ERROR", str(e))
             raise
 
-    def get_gold_price(self) -> Dict:
-        """Get current GOLD (XAUUSD) price"""
+    def get_market_data(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[Dict]:
+        """Mock market data fetch."""
         try:
-            response = self._make_request('GET', '/api/v1/ticker/price', 
-                                        params={'symbol': 'XAUUSD'})
-            logger.info(f"Current GOLD price: {response.get('price')}")
-            return response
+            # Generate mock OHLCV data
+            data = []
+            base_price = self._mock_data['price']
+            
+            for i in range(limit):
+                timestamp = datetime.now().timestamp() * 1000 - (i * 3600 * 1000)  # 1-hour intervals
+                data.append({
+                    'timestamp': datetime.fromtimestamp(timestamp / 1000),
+                    'open': base_price + (i % 10),
+                    'high': base_price + (i % 10) + 5,
+                    'low': base_price + (i % 10) - 5,
+                    'close': base_price + (i % 10) + 2,
+                    'volume': 1000 + (i * 10)
+                })
+            
+            return data
+            
+        except Exception as e:
+            log_error("MARKET_DATA_FETCH_ERROR", str(e))
+            return []
+
+    def get_current_price(self, symbol: str) -> float:
+        """Get mock current price."""
+        try:
+            # Simulate small price movements
+            self._mock_data['price'] += (time.time() % 2 - 1) * 0.5
+            return self._mock_data['price']
         except Exception as e:
             log_error("PRICE_FETCH_ERROR", str(e))
-            raise
+            return 0.0
 
-    def place_order(self, order_type: str, side: str, quantity: float, 
-                   price: Optional[float] = None, stop_loss: Optional[float] = None,
+    def get_account_balance(self) -> float:
+        """Get mock account balance."""
+        try:
+            return self._mock_data['balance']
+        except Exception as e:
+            log_error("BALANCE_FETCH_ERROR", str(e))
+            return 0.0
+
+    def place_order(self, symbol: str, order_type: str, side: str, 
+                   quantity: float, price: Optional[float] = None,
+                   stop_loss: Optional[float] = None, 
                    take_profit: Optional[float] = None) -> Dict:
-        """
-        Place a new order
-        
-        Args:
-            order_type: Type of order (MARKET, LIMIT)
-            side: Order side (BUY, SELL)
-            quantity: Order quantity in lots
-            price: Order price (required for LIMIT orders)
-            stop_loss: Stop loss price
-            take_profit: Take profit price
-        """
-        params = {
-            'symbol': 'XAUUSD',
-            'type': order_type,
-            'side': side,
-            'quantity': quantity
-        }
-
-        if order_type == 'LIMIT':
-            if not price:
-                raise ValueError("Price is required for LIMIT orders")
-            params['price'] = price
-
-        if stop_loss:
-            params['stopLoss'] = stop_loss
-
-        if take_profit:
-            params['takeProfit'] = take_profit
-
+        """Place mock order."""
         try:
-            response = self._make_request('POST', '/api/v1/order', params=params, signed=True)
+            order = {
+                'id': str(len(self._mock_data['orders']) + 1),
+                'symbol': symbol,
+                'type': order_type,
+                'side': side,
+                'quantity': quantity,
+                'price': price or self._mock_data['price'],
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'status': 'EXECUTED',
+                'timestamp': datetime.utcnow().timestamp()
+            }
             
-            log_trade(
-                action=side,
-                symbol='XAUUSD',
-                price=price or response.get('price'),
-                quantity=quantity,
-                order_type=order_type,
-                status='EXECUTED',
-                stop_loss=stop_loss,
-                take_profit=take_profit
-            )
+            self._mock_data['orders'].append(order)
             
-            return response
+            # Update mock positions
+            position = {
+                'id': str(len(self._mock_data['positions']) + 1),
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'entry_price': order['price'],
+                'current_price': order['price'],
+                'unrealized_pnl': 0.0
+            }
             
-        except Exception as e:
-            log_error("ORDER_PLACEMENT_ERROR", str(e), order_params=params)
-            raise
+            self._mock_data['positions'].append(position)
+            
+            logger.info(f"Mock order placed: {order}")
+            return order
 
-    def cancel_order(self, order_id: str) -> Dict:
-        """Cancel an existing order"""
+        except Exception as e:
+            log_error("ORDER_PLACEMENT_ERROR", str(e))
+            return {}
+
+    def close_position(self, symbol: str) -> bool:
+        """Close mock position."""
         try:
-            response = self._make_request('DELETE', f'/api/v1/order/{order_id}', signed=True)
-            logger.info(f"Successfully cancelled order {order_id}")
-            return response
-        except Exception as e:
-            log_error("ORDER_CANCEL_ERROR", str(e), order_id=order_id)
-            raise
+            positions = [p for p in self._mock_data['positions'] if p['symbol'] == symbol]
+            if not positions:
+                return True
 
-    def get_open_positions(self) -> Dict:
-        """Get all open positions"""
+            for position in positions:
+                current_price = self.get_current_price(symbol)
+                pnl = (current_price - position['entry_price']) * position['quantity']
+                if position['side'] == 'SELL':
+                    pnl = -pnl
+
+                # Update mock balance
+                self._mock_data['balance'] += pnl
+                
+                # Remove position
+                self._mock_data['positions'] = [
+                    p for p in self._mock_data['positions'] if p['id'] != position['id']
+                ]
+
+            return True
+
+        except Exception as e:
+            log_error("POSITION_CLOSURE_ERROR", str(e))
+            return False
+
+    def get_position(self, symbol: str) -> Dict:
+        """Get mock position."""
         try:
-            response = self._make_request('GET', '/api/v1/openPositions', signed=True)
-            logger.info(f"Retrieved {len(response)} open positions")
-            return response
+            positions = [p for p in self._mock_data['positions'] if p['symbol'] == symbol]
+            return positions[0] if positions else {}
         except Exception as e:
-            log_error("OPEN_POSITIONS_ERROR", str(e))
-            raise
+            log_error("POSITION_FETCH_ERROR", str(e))
+            return {}
 
-    def modify_position(self, position_id: str, stop_loss: Optional[float] = None,
-                       take_profit: Optional[float] = None) -> Dict:
-        """
-        Modify an existing position's stop loss or take profit
-        
-        Args:
-            position_id: ID of the position to modify
-            stop_loss: New stop loss price
-            take_profit: New take profit price
-        """
-        params = {}
-        if stop_loss:
-            params['stopLoss'] = stop_loss
-        if take_profit:
-            params['takeProfit'] = take_profit
-
+    def get_order_status(self, order_id: str, symbol: str) -> Dict:
+        """Get mock order status."""
         try:
-            response = self._make_request('POST', f'/api/v1/position/{position_id}/modify',
-                                        params=params, signed=True)
-            logger.info(f"Successfully modified position {position_id}")
-            return response
+            orders = [o for o in self._mock_data['orders'] if o['id'] == order_id]
+            return orders[0] if orders else {}
         except Exception as e:
-            log_error("POSITION_MODIFY_ERROR", str(e), 
-                     position_id=position_id, modifications=params)
-            raise
+            log_error("ORDER_STATUS_FETCH_ERROR", str(e))
+            return {}
 
-    def get_order_history(self, start_time: Optional[int] = None,
-                         end_time: Optional[int] = None) -> Dict:
-        """
-        Get historical orders
-        
-        Args:
-            start_time: Start time in milliseconds
-            end_time: End time in milliseconds
-        """
-        params = {}
-        if start_time:
-            params['startTime'] = start_time
-        if end_time:
-            params['endTime'] = end_time
-
+    def cancel_order(self, order_id: str, symbol: str) -> bool:
+        """Cancel mock order."""
         try:
-            response = self._make_request('GET', '/api/v1/orderHistory',
-                                        params=params, signed=True)
-            logger.info(f"Retrieved order history from {start_time} to {end_time}")
-            return response
+            self._mock_data['orders'] = [
+                o for o in self._mock_data['orders'] if o['id'] != order_id
+            ]
+            return True
         except Exception as e:
-            log_error("ORDER_HISTORY_ERROR", str(e), 
-                     start_time=start_time, end_time=end_time)
-            raise
+            log_error("ORDER_CANCELLATION_ERROR", str(e))
+            return False
 
-# Example usage:
-"""
-api = PuPrimeAPI()
+    def get_trading_fees(self, symbol: str) -> Dict:
+        """Get mock trading fees."""
+        try:
+            return {
+                'maker': 0.001,  # 0.1%
+                'taker': 0.002   # 0.2%
+            }
+        except Exception as e:
+            log_error("FEE_FETCH_ERROR", str(e))
+            return {}
 
-# Get account information
-account_info = api.get_account_info()
+    def get_order_book(self, symbol: str, limit: int = 20) -> Dict:
+        """Get mock order book."""
+        try:
+            current_price = self.get_current_price(symbol)
+            asks = [(current_price + (i * 0.1), 1.0) for i in range(limit)]
+            bids = [(current_price - (i * 0.1), 1.0) for i in range(limit)]
+            
+            return {
+                'asks': asks,
+                'bids': bids
+            }
+        except Exception as e:
+            log_error("ORDER_BOOK_FETCH_ERROR", str(e))
+            return {'asks': [], 'bids': []}
 
-# Get current GOLD price
-gold_price = api.get_gold_price()
+    def get_open_positions(self) -> List[Dict]:
+        """Get all mock open positions."""
+        try:
+            return self._mock_data['positions']
+        except Exception as e:
+            log_error("OPEN_POSITIONS_FETCH_ERROR", str(e))
+            return []
 
-# Place a market buy order
-order = api.place_order(
-    order_type='MARKET',
-    side='BUY',
-    quantity=0.01,
-    stop_loss=1900.00,
-    take_profit=1950.00
-)
-"""
+    def get_account_info(self) -> Dict:
+        """Get mock account information."""
+        try:
+            return {
+                'balance': self._mock_data['balance'],
+                'equity': self._mock_data['balance'],
+                'margin': 0.0,
+                'free_margin': self._mock_data['balance'],
+                'margin_level': 100.0,
+                'positions': len(self._mock_data['positions'])
+            }
+        except Exception as e:
+            log_error("ACCOUNT_INFO_FETCH_ERROR", str(e))
+            return {}
